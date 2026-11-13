@@ -1,0 +1,1 @@
+{"body_bytes": 15, "body_sha256": "a29ee2b15c494311c52521766e44af56a3ad2248e7a8ab465e5206463c13d288", "content_type": "application/json; charset=utf-8", "elapsed_ms": 0.34, "json": {"status": "ok"}, "method": "GET", "path": "/health", "status": 200}

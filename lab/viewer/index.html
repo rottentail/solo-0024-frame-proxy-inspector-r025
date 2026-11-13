@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>帧代理审片实验：采样步长与判断质量</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="mast-inner">
+    <p class="kicker">归档审片 / 帧代理实验包</p>
+    <h1>逐帧原画面 × 场景分段 × 联系表</h1>
+    <p class="lede">
+      同一段 200 帧素材，在<strong>单任务最多驻留两张源 RGB 画面</strong>的条件下，
+      比较采样步长 1–4 的真实服务结果。所有数字、边界、联系表与哈希都来自当前服务的
+      不修改运行，不手工修正。
+    </p>
+  </div>
+</header>
+
+<nav class="tabs" aria-label="实验步骤">
+  <button class="tab active" data-tab="step-frames">1 逐帧原画面</button>
+  <button class="tab" data-tab="step-scenes">2 实际场景分段</button>
+  <button class="tab" data-tab="step-sheet">3 联系表对应</button>
+  <button class="tab" data-tab="step-tradeoff">4 计算速度取舍</button>
+  <button class="tab" data-tab="step-counter">5 反例</button>
+  <button class="tab" data-tab="step-interrupt">6 中断与复用</button>
+  <button class="tab" data-tab="step-audit">7 审计</button>
+</nav>
+
+<main class="layout">
+<section id="step-frames" class="panel active">
+  <div class="panel-copy">
+    <h2>1 · 逐帧切换原画面</h2>
+    <p>
+      这里是服务所存 AVI 中逐帧解码出的原画面（160×90，12 fps，无缩放）。
+      同一个镜头内部，白色标记逐帧移动，所以相邻帧并不相同；跨镜头时整幅画面换色。
+      当前帧的 SHA-256 与源 RGB 缓冲区逐字节对应。
+    </p>
+    <p class="muted">
+      这不是联系表里的缩略图，而是解码后的源像素。后面每一步都从这张原画面出发。
+    </p>
+    <div class="clip-meta" id="clip-meta"></div>
+    <div class="design-legend" id="design-legend"></div>
+  </div>
+  <div class="panel-stage">
+    <div class="frame-stage">
+      <img id="frame-img" alt="源帧" width="640" height="360">
+      <div class="frame-overlay" id="frame-overlay"></div>
+    </div>
+    <div id="frame-origin" class="return-link" hidden></div>
+    <div class="frame-controls">
+      <button id="frame-prev" class="ctrl">◀ 上一帧</button>
+      <input id="frame-slider" type="range" min="0" max="199" value="0" step="1">
+      <button id="frame-next" class="ctrl">下一帧 ▶</button>
+    </div>
+    <div class="frame-readout">
+      <span class="mono" id="frame-number">帧 000</span>
+      <span id="frame-scene-label" class="badge"></span>
+      <span class="mono small" id="frame-digest"></span>
+    </div>
+    <div class="frame-strip" id="frame-strip" aria-label="按设计镜头分段"></div>
+    <p class="muted small">色条按设计镜头分段；点击色条任意位置可跳到对应帧。</p>
+  </div>
+</section>
+
+<section id="step-scenes" class="panel">
+  <div class="panel-copy">
+    <h2>2 · 观察实际场景分段</h2>
+    <p>
+      下面每一个分界都来自服务返回的 <code>scenes</code> 记录。切换采样设置，
+      逐帧查看镜头内部的真实片段，再对照服务接受的分界线：低对比硬切会被统计指纹漏掉，
+      两帧短镜头在步长 4 下会被完全跳过。
+    </p>
+    <label class="field">
+      采样设置
+      <select id="scene-stride" class="select"></select>
+    </label>
+    <div class="stat-grid" id="scene-stats"></div>
+    <div class="truth-strip">
+      <h3>设计真实镜头（生成时写死，不受采样影响）</h3>
+      <div id="truth-segments"></div>
+    </div>
+    <div class="truth-strip">
+      <h3>服务接受的分段（来自记录）</h3>
+      <div id="scene-segments"></div>
+    </div>
+  </div>
+  <div class="panel-stage">
+    <div class="probe-stage">
+      <img id="scene-frame-img" alt="当前帧" width="640" height="360">
+      <div class="probe-caption" id="scene-frame-caption"></div>
+    </div>
+    <div class="frame-controls">
+      <button id="scene-prev" class="ctrl">◀</button>
+      <input id="scene-slider" type="range" min="0" max="199" value="0" step="1">
+      <button id="scene-next" class="ctrl">▶</button>
+      <button id="scene-jump-cut" class="ctrl alt">跳到最近分界</button>
+    </div>
+    <div id="scene-detail" class="scene-detail"></div>
+    <h3>相邻采样帧的统计距离</h3>
+    <p class="muted small">阈值 <span id="threshold-line" class="mono"></span>：距离 ≥ 阈值才会成为候选分界。</p>
+    <table class="data-table" id="distance-table"></table>
+  </div>
+</section>
+
+<section id="step-sheet" class="panel">
+  <div class="panel-copy">
+    <h2>3 · 联系表 ↔ 原帧对应</h2>
+    <p>
+      联系表由服务真实合成并通过 <code>tile_map</code> 记录每格引用的源帧。
+      悬停任意格子会在右侧预览它引用的源帧；单击会跳到第 1 步的该帧，并在那里给出
+      “回到联系表”的链接。每一格都指向它实际引用的那一帧，不是演示用的替身。
+    </p>
+    <label class="field">
+      联系表对应的采样设置
+      <select id="sheet-stride" class="select"></select>
+    </label>
+    <div class="sheet-meta" id="sheet-meta"></div>
+    <div class="sheet-canvas-wrap">
+      <canvas id="sheet-canvas" role="img" aria-label="服务生成的联系表"></canvas>
+    </div>
+    <div id="sheet-return" class="return-link" hidden></div>
+    <div class="tile-table-wrap">
+      <table class="data-table" id="tile-table"></table>
+    </div>
+  </div>
+  <div class="panel-stage">
+    <div class="probe-stage">
+      <img id="sheet-frame-img" alt="被引用源帧" width="640" height="360">
+      <div class="probe-caption" id="sheet-frame-caption"></div>
+    </div>
+    <div id="sheet-proof" class="proof-box"></div>
+  </div>
+</section>
+
+<section id="step-tradeoff" class="panel wide">
+  <h2>4 · 计算速度与判断质量的可观察取舍</h2>
+  <p class="lede">
+    同一批素材、同一灵敏度 0.55、同一最小场景 2 帧。唯一变化是 <code>sample_stride</code>。
+    下面是真实服务的测量，不是模型猜测。
+  </p>
+  <div id="tradeoff-cards" class="card-grid"></div>
+  <div class="chart-wrap">
+    <h3>耗时（服务端 HTTP 往返，毫秒）</h3>
+    <div id="speed-chart" class="bar-chart"></div>
+    <h3>判断质量（与设计真实镜头的差异，越小越好）</h3>
+    <div id="quality-chart" class="bar-chart"></div>
+  </div>
+  <table class="data-table" id="tradeoff-table"></table>
+  <div class="callout">
+    <h3>怎么看这张表</h3>
+    <ul>
+      <li>步长 1→2 几乎不损失边界位置，耗时约减半。</li>
+      <li>步长 3 起，分界整体推迟 2–3 帧；短镜头仍被漏掉。</li>
+      <li>步长 4 只保留 4 个场景：洋红 A / 暗底橙闪 / 洋红 B / 中性灰整体消失。</li>
+      <li>两帧短镜头与低对比硬切在<strong>所有</strong>步长下都被漏掉——这是检测阈值的问题，不是采样的问题。</li>
+    </ul>
+  </div>
+  <details class="audit-details">
+    <summary>采样后驻留与逐对距离明细</summary>
+    <div id="tradeoff-detail"></div>
+  </details>
+</section>
+
+<section id="step-counter" class="panel wide">
+  <h2>5 · 统计特征无法分辨、人眼可辨的反例</h2>
+  <p class="lede">
+    第 4 帧是第 0 帧的精确 180° 逐像素旋转。所有指纹统计量完全相同，服务因此判定“无场景变化”；
+    人眼却会立刻看到白色标记从左侧跳到右侧。这个反例被保留在实验里，没有为了演示好看而修正。
+  </p>
+  <div class="counter-grid">
+    <div class="counter-pane">
+      <h3>帧 3（点击回到原始帧）</h3>
+      <img id="counter-left" alt="帧 3" width="480" height="270" class="clickable">
+    </div>
+    <div class="counter-pane">
+      <h3>帧 4（点击回到原始帧）</h3>
+      <img id="counter-right" alt="帧 4" width="480" height="270" class="clickable">
+    </div>
+  </div>
+  <div id="counter-stats" class="stat-grid"></div>
+  <div class="callout warn">
+    <h3>服务结论：一段 8 帧的单一场景，<code>cut_frames = []</code></h3>
+    <p>这不是渲染失误，也不是观测遗漏：两个帧的普通统计量完全相等。把它们放在一起并隐藏差别，才是真的把实验做成了宣传。</p>
+  </div>
+  <div class="vs-wrap">
+    <h3>逐对距离（同一段素材）</h3>
+    <table class="data-table" id="counter-pairs"></table>
+  </div>
+</section>
+
+<section id="step-interrupt" class="panel wide">
+  <h2>6 · 生成中断后重新执行：复用已验证结果</h2>
+  <p class="lede">
+    第一次请求在服务端尚未返回响应时，客户端主动断开。服务的任务继续运行并自行提交了终态记录。
+    第二次用同一 ID 重试 → 服务以 <code>conflict</code> 拒绝覆盖；实验改为复用那条已提交记录，
+    并逐帧重新验证它引用的帧摘要，再用它合成联系表。没有把部分输出拼成成功演示。
+  </p>
+  <div class="interrupt-grid" id="interrupt-grid"></div>
+  <h3>复用路径逐帧验证（从已存 AVI 重新解码）</h3>
+  <table class="data-table" id="reuse-table"></table>
+  <div id="interrupt-requests"></div>
+</section>
+
+<section id="step-audit" class="panel wide">
+  <h2>7 · 审计与复现</h2>
+  <p class="lede">
+    这一页把“材料由真实服务产生”拆成可检查的条目：每条 HTTP 请求的状态、字节数与 SHA-256，
+    每个产物的摘要，以及所有交叉校验的布尔结果。
+  </p>
+  <div id="audit-checks" class="card-grid"></div>
+  <h3>实验条件</h3>
+  <div id="audit-conditions" class="conditions"></div>
+  <h3>HTTP 请求日志</h3>
+  <table class="data-table" id="request-table"></table>
+  <h3>复现命令</h3>
+  <pre class="term"><code id="reproduce-commands"></code></pre>
+  <p class="muted small">数据与画面文件均随包提供。重新生成会覆盖旧证据，并打印同一组交叉校验。</p>
+</section>
+</main>
+
+<footer class="footer">
+  <p>实验包只读取服务结果；生产服务源码未被修改。所有断言可在 <code>lab/evidence/evidence.json</code> 里逐条核对。</p>
+</footer>
+
+<script src="data.js"></script>
+<script src="viewer.js"></script>
+</body>
+</html>
